@@ -36,7 +36,7 @@ param sequence = 1
 
 Then, run the `./deploy.ps` PowerShell.
 
-> This command should be run from a system that will have line-of-sight to the Function App's private endpoint and will be able to resolve it's DNS name to the private endpoint IP address.
+> This command should be run from a system that will have line-of-sight to the Function App's private endpoint and will be able to resolve its DNS name to the private endpoint IP address.
 
 ```PowerShell
 ./deploy.ps1
