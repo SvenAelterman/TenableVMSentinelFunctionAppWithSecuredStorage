@@ -12,8 +12,13 @@ $DeploymentResults = New-AzResourceGroupDeployment `
     -Verbose
 
 if ($DeploymentResults.ProvisioningState -eq 'Succeeded') {
+    # Flexible Consumption model doesn't support specifying the zip file as an environment variable during deployment.
+    # Therefore, we need to deploy the zip file separately after the function app is created.
+
+    # Ensure we're using the same subscription for AZ CLI as for the Az PS modules
     az account set --subscription "$((Get-AzContext).Subscription.Id)"
 
+    # Deploy the function app zip file
     az functionapp deployment source config-zip `
         --name "$($DeploymentResults.Outputs.functionAppName.Value)" `
         --resource-group $ResourceGroupName `
