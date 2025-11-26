@@ -7,8 +7,6 @@
     - Role assignments for the Key Vault
 */
 
-// TODO: Use NAT Gateway for outbound traffic
-
 param existingPrivateLinkDnsZonesResourceGroupResourceId string
 
 param functionName string = 'TenableVM'
@@ -25,8 +23,12 @@ param tenableSecretKey string
 param lowestSeverity string = 'Info'
 param complianceDataIngestion bool = false
 param tenableExportScheduleInMinutes int = 1440
-// #disable-next-line secure-secrets-in-params
-// param secretExpirationDateSeedDate string = '2025-05-31T00:00:00Z'
+#disable-next-line secure-secrets-in-params
+param secretExpirationDateSeedDate string = '2025-10-31T00:00:00Z'
+
+param virtualNetworkAddressPrefix string = '10.0.0.0/24'
+
+param enableAvmTelemetry bool = true
 
 param sequence int = 1
 param tags object = {}
@@ -34,7 +36,8 @@ param tags object = {}
 // HACK: I don't like the way Tenable developed this
 var logAnalyticsUri = replace(environment().portal, 'https://portal', 'https://${sentinelWorkspaceId}.ods.opinsights')
 
-// var secretExpirationDate = dateTimeAdd(secretExpirationDateSeedDate, 'P1Y')
+// Calculate the secret expiration date as one year from the seed date
+var secretExpirationDate = dateTimeAdd(secretExpirationDateSeedDate, 'P1Y')
 var sequenceFormatted = format('{0:D2}', sequence)
 
 var shortLocationNames = {
@@ -50,12 +53,47 @@ var shortLocationNames = {
   // Add more locations as needed
 }
 
+// Create a NAT Gateway for outbound traffic from the app to Tenable
+module natGatewayModule 'br/public:avm/res/network/nat-gateway:2.0.0' = {
+  name: 'natGatewayDeployment'
+  params: {
+    name: 'ng-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
+    tags: tags
+
+    // Deploy non-zonal, pending zone redundancy support for NAT Gateway
+    availabilityZone: -1
+
+    // Create a public IP for the NAT Gateway and make it zone redundant even if NAT Gateway itself isn't yet
+    publicIPAddresses: [
+      {
+        availabilityZones: [
+          1
+          2
+          3
+        ]
+        name: 'pip-ng-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
+        skuTier: 'Regional'
+        diagnosticSettings: [
+          {
+            name: 'customSetting'
+            workspaceResourceId: appInsightsWorkspaceResourceID
+          }
+        ]
+      }
+    ]
+
+    enableTelemetry: enableAvmTelemetry
+  }
+}
+
 module networkSecurityGroupModule 'br/public:avm/res/network/network-security-group:0.5.1' = {
   name: 'networkSecurityGroupDeployment'
   params: {
     // Required parameters
     name: 'nsg-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
     tags: tags
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
@@ -64,10 +102,7 @@ module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.0' = 
   name: 'virtualNetworkDeployment'
   params: {
     // Required parameters
-    addressPrefixes: [
-      // Hardcoding in this case because this won't be peered to anything else
-      '10.0.0.0/24'
-    ]
+    addressPrefixes: [virtualNetworkAddressPrefix]
     name: 'vnet-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
     // Non-required parameters
     diagnosticSettings: [
@@ -80,22 +115,26 @@ module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.0' = 
     location: resourceGroup().location
     subnets: [
       {
-        addressPrefix: '10.0.0.0/28'
+        addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 28, 1)
         name: 'PrivateEndpointSubnet'
         networkSecurityGroupResourceId: networkSecurityGroupModule.outputs.resourceId
       }
       {
-        addressPrefix: '10.0.0.64/26'
+        addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 27, 2)
         delegation: 'Microsoft.App/environments'
         name: 'FunctionAppSubnet'
         networkSecurityGroupResourceId: networkSecurityGroupModule.outputs.resourceId
+        natGatewayResourceId: natGatewayModule.outputs.resourceId
       }
     ]
     tags: tags
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
 // Link the existing private DNS zones.
+// TODO: Make into a object
 var privateDnsZoneNames = [
   'privatelink.azurewebsites.net'
   #disable-next-line no-hardcoded-env-urls
@@ -106,7 +145,7 @@ var privateDnsZoneNames = [
   'privatelink.queue.core.windows.net'
   #disable-next-line no-hardcoded-env-urls
   'privatelink.table.core.windows.net'
-  //'privatelink.vaultcore.azure.net'
+  'privatelink.vaultcore.azure.net'
 ]
 
 var privateDnsZoneResourceGroupName = split(existingPrivateLinkDnsZonesResourceGroupResourceId, '/')[4]
@@ -136,25 +175,6 @@ module privateDnsZonesVnetLinksModule 'modules/virtual-network-link/main.bicep' 
   }
 ]
 
-// module privateDnsZonesModule 'br/public:avm/res/network/private-dns-zone:0.7.1' = [
-//   for privateDnsZoneName in privateDnsZoneNames: {
-//     name: 'privateDnsZoneDeployment-${privateDnsZoneName}'
-//     params: {
-//       // Required parameters
-//       name: privateDnsZoneName
-//       // Non-required parameters
-//       location: 'global'
-//       tags: tags
-
-//       virtualNetworkLinks: [
-//         {
-//           virtualNetworkResourceId: virtualNetworkModule.outputs.resourceId
-//         }
-//       ]
-//     }
-//   }
-// ]
-
 // Create the UAMI
 module userAssignedIdentityModule 'br/public:avm/res/managed-identity/user-assigned-identity:0.4.1' = {
   name: 'userAssignedIdentityDeployment'
@@ -163,84 +183,87 @@ module userAssignedIdentityModule 'br/public:avm/res/managed-identity/user-assig
     name: 'id-${functionName}-prod-${shortLocationNames[resourceGroup().location]}-${sequenceFormatted}'
     // Non-required parameters
     tags: tags
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
 // Create the Key Vault with private endpoint and secrets
-// Disable due to lack of support for Key Vault references in network-restricted KVs in Flex Consumption Plan
-// module vaultModule 'br/public:avm/res/key-vault/vault:0.12.1' = {
-//   name: 'vaultDeployment'
-//   params: {
-//     // Required parameters
-//     name: 'kv-${functionName}-prod-${shortLocationNames[resourceGroup().location]}-01'
-//     // Non-required parameters
-//     diagnosticSettings: [
-//       {
-//         workspaceResourceId: appInsightsWorkspaceResourceID
-//       }
-//     ]
-//     enablePurgeProtection: false
-//     enableRbacAuthorization: true
-//     publicNetworkAccess: 'Disabled'
-//     networkAcls: {
-//       bypass: 'AzureServices'
-//       defaultAction: 'Deny'
-//     }
-//     privateEndpoints: [
-//       {
-//         privateDnsZoneGroup: {
-//           privateDnsZoneGroupConfigs: [
-//             {
-//               privateDnsZoneResourceId: existingPrivateLinkDnsZones[3].id
-//             }
-//           ]
-//         }
-//         service: 'vault'
-//         subnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[0]
-//       }
-//     ]
-//     secrets: [
-//       {
-//         attributes: {
-//           enabled: true
-//           exp: dateTimeToEpoch(secretExpirationDate)
-//         }
-//         contentType: 'The primary or secondary key for the Sentinel Log Analytics Workspace'
-//         name: 'sentinelWorkspaceKey'
-//         value: sentinelWorkspaceKey
-//       }
-//       {
-//         attributes: {
-//           enabled: true
-//           exp: dateTimeToEpoch(secretExpirationDate)
-//         }
-//         contentType: 'Tenable API Access Key'
-//         name: 'tenableAccessKey'
-//         value: tenableAccessKey
-//       }
-//       {
-//         attributes: {
-//           enabled: true
-//           exp: dateTimeToEpoch(secretExpirationDate)
-//         }
-//         contentType: 'Tenable API Secret Key'
-//         name: 'tenableSecretKey' // TODO: Don't hardcode secret names
-//         value: tenableSecretKey
-//       }
-//     ]
-//     softDeleteRetentionInDays: 7
-//     tags: tags
+module vaultModule 'br/public:avm/res/key-vault/vault:0.12.1' = {
+  name: 'vaultDeployment'
+  params: {
+    // Required parameters
+    name: 'kv-${functionName}-prod-${shortLocationNames[resourceGroup().location]}-${sequenceFormatted}'
+    // Non-required parameters
+    diagnosticSettings: [
+      {
+        workspaceResourceId: appInsightsWorkspaceResourceID
+      }
+    ]
+    enablePurgeProtection: false
+    enableRbacAuthorization: true
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Deny'
+    }
+    privateEndpoints: [
+      {
+        privateDnsZoneGroup: {
+          privateDnsZoneGroupConfigs: [
+            {
+              privateDnsZoneResourceId: existingPrivateLinkDnsZones[5].id
+            }
+          ]
+        }
+        service: 'vault'
+        subnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[0]
+      }
+    ]
+    secrets: [
+      {
+        attributes: {
+          enabled: true
+          exp: dateTimeToEpoch(secretExpirationDate)
+        }
+        contentType: 'The primary or secondary key for the Sentinel Log Analytics Workspace'
+        name: 'sentinelWorkspaceKey'
+        value: sentinelWorkspaceKey
+      }
+      {
+        attributes: {
+          enabled: true
+          exp: dateTimeToEpoch(secretExpirationDate)
+        }
+        contentType: 'Tenable API Access Key'
+        name: 'tenableAccessKey'
+        value: tenableAccessKey
+      }
+      {
+        attributes: {
+          enabled: true
+          exp: dateTimeToEpoch(secretExpirationDate)
+        }
+        contentType: 'Tenable API Secret Key'
+        name: 'tenableSecretKey' // TODO: Don't hardcode secret names
+        value: tenableSecretKey
+      }
+    ]
+    softDeleteRetentionInDays: 7
+    tags: tags
 
-//     // TODO: Assign role to the UAMI
-//     roleAssignments: [
-//       {
-//         principalId: userAssignedIdentityModule.outputs.principalId
-//         roleDefinitionIdOrName: 'Key Vault Secrets User'
-//         principalType: 'ServicePrincipal'
-//       }
-//     ]
-//   }
-// }
+    // Assign a Key Vault data plane role to the UAMI
+    roleAssignments: [
+      {
+        principalId: userAssignedIdentityModule.outputs.principalId
+        roleDefinitionIdOrName: 'Key Vault Secrets User'
+        principalType: 'ServicePrincipal'
+      }
+    ]
+
+    enableTelemetry: enableAvmTelemetry
+  }
+}
 
 var appPackageContainerName = 'app-package-${toLower(functionName)}'
 
@@ -360,6 +383,8 @@ module storageAccountModule 'br/public:avm/res/storage/storage-account:0.20.0' =
         principalType: 'ServicePrincipal'
       }
     ]
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
@@ -386,6 +411,8 @@ module componentModule 'br/public:avm/res/insights/component:0.6.0' = {
         principalType: 'ServicePrincipal'
       }
     ]
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
@@ -406,6 +433,8 @@ module serverfarmModule 'br/public:avm/res/web/serverfarm:0.4.1' = {
     skuName: 'FC1'
     tags: tags
     zoneRedundant: false
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
@@ -414,7 +443,7 @@ var functionAppSpecialTags = {
 }
 
 // Create the Function App and assign UAMI
-module functionAppModule 'br/public:avm/res/web/site:0.16.0' = {
+module functionAppModule 'br/public:avm/res/web/site:0.19.4' = {
   name: 'functionAppDeployment'
   params: {
     // Required parameters
@@ -424,27 +453,27 @@ module functionAppModule 'br/public:avm/res/web/site:0.16.0' = {
 
     httpsOnly: true
     publicNetworkAccess: 'Disabled'
-    vnetRouteAllEnabled: true
-    vnetContentShareEnabled: true
+    virtualNetworkSubnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[1]
+    outboundVnetRouting: {
+      allTraffic: true
+      contentShareTraffic: true
+      applicationTraffic: true
+    }
 
     configs: [
       {
         applicationInsightResourceId: componentModule.outputs.resourceId
         name: 'appsettings'
         properties: {
-          FUNCTIONS_EXTENSION_VERSION: '~4'
           APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${userAssignedIdentityModule.outputs.clientId};Authorization=AAD'
           APPLICATIONINSIGHTS_CONNECTION_STRING: componentModule.outputs.connectionString
 
           // Tenable app-specific settings
           WorkspaceID: sentinelWorkspaceId
 
-          WorkspaceKey: sentinelWorkspaceKey
-          TIO_SECRET_KEY: tenableSecretKey
-          TIO_ACCESS_KEY: tenableAccessKey
-          // WorkspaceKey: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/sentinelWorkspaceKey)' // TODO: Do not hardcode secret names
-          // TIO_SECRET_KEY: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/tenableSecretKey)'
-          // TIO_ACCESS_KEY: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/tenableAccessKey)'
+          WorkspaceKey: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/sentinelWorkspaceKey)' // TODO: Do not hardcode secret names
+          TIO_SECRET_KEY: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/tenableSecretKey)'
+          TIO_ACCESS_KEY: '@Microsoft.KeyVault(SecretUri=${vaultModule.outputs.uri}secrets/tenableAccessKey)'
 
           LowestSeveritytoStore: lowestSeverity
           ComplianceDataIngestion: string(complianceDataIngestion)
@@ -462,8 +491,8 @@ module functionAppModule 'br/public:avm/res/web/site:0.16.0' = {
         storageAccountUseIdentityAuthentication: true
       }
     ]
-    tags: tags
-    virtualNetworkSubnetId: virtualNetworkModule.outputs.subnetResourceIds[1]
+
+    tags: union(tags, functionAppSpecialTags)
 
     keyVaultAccessIdentityResourceId: userAssignedIdentityModule.outputs.resourceId
 
@@ -522,12 +551,15 @@ module functionAppModule 'br/public:avm/res/web/site:0.16.0' = {
         }
         service: 'sites'
         subnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[0]
-        tags: union(tags, functionAppSpecialTags)
+        tags: tags
       }
     ]
+
+    enableTelemetry: enableAvmTelemetry
   }
 }
 
+// Assign Storage Blob Data Contributor role to the Function App's system-assigned managed identity
 module systemAssignedIdentityRoleAssignmentModule 'modules/roleAssignment-st/main.bicep' = {
   name: 'systemAssignedIdentityRoleAssignmentDeployment'
   params: {

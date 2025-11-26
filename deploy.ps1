@@ -1,3 +1,5 @@
+[CmdletBinding()]
+
 [string]$ResourceGroupName = "tenablevm-test-rg-cnc-01"
 [string]$FxAppZipFileName = "tenablevm.zip"
 
