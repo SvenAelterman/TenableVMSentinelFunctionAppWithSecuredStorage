@@ -10,10 +10,11 @@ param (
 )
 
 [string]$FxAppZipFileName = "tenablevm.zip"
-[string]$FxAppSource = "https://aka.ms/sentinel-TenableVMAzureSentinelConnector-functionapp"
+[string]$FxAppSource = "https://aka.ms/sentinel-TenableVMAzureSentinelConnector310Updated-functionapp"
 
 # Version 3.10: https://aka.ms/sentinel-TenableVMAzureSentinelConnector310-functionapp
 # Version 3.11: https://aka.ms/sentinel-TenableVMAzureSentinelConnector-functionapp
+# Version 3.10 "updated" (latest Fx app bundle): https://aka.ms/sentinel-TenableVMAzureSentinelConnector310Updated-functionapp
 # Download the function app zip file for deployment
 Invoke-WebRequest -Uri $FxAppSource -OutFile $FxAppZipFileName
 
