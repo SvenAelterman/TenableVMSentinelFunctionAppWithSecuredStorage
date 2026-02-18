@@ -19,10 +19,11 @@ param (
 Invoke-WebRequest -Uri $FxAppSource -OutFile $FxAppZipFileName
 
 # Install the AZ CLI
+[string]$AzCliInstallerFileName = "AzureCLIx64.msi"
 $ProgressPreference = 'SilentlyContinue'
-Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile .\AzureCLI.msi
-Start-Process msiexec.exe -Wait -ArgumentList '/I', 'AzureCLI.msi', '/quiet'
-Remove-Item .\AzureCLI.msi
+Invoke-WebRequest -Uri https://aka.ms/installazurecliwindowsx64 -OutFile .\$AzCliInstallerFileName
+Start-Process msiexec.exe -Wait -ArgumentList '/I', $AzCliInstallerFileName, '/quiet'
+Remove-Item .\$AzCliInstallerFileName
 
 # Get-Command az might not return anything because "az" isn't in the path yet
 #$AZCliPath = Get-Command az | Select-Object -ExpandProperty Source
