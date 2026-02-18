@@ -18,7 +18,11 @@ param (
 # Download the function app zip file for deployment
 Invoke-WebRequest -Uri $FxAppSource -OutFile $FxAppZipFileName
 
-& winget install -e -h -s winget --id Microsoft.AzureCLI
+# Install the AZ CLI
+$ProgressPreference = 'SilentlyContinue'
+Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile .\AzureCLI.msi
+Start-Process msiexec.exe -Wait -ArgumentList '/I', 'AzureCLI.msi', '/quiet'
+Remove-Item .\AzureCLI.msi
 
 # Get-Command az might not return anything because "az" isn't in the path yet
 #$AZCliPath = Get-Command az | Select-Object -ExpandProperty Source
