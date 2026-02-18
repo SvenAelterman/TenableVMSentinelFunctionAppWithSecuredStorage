@@ -28,10 +28,18 @@ param secretExpirationDateSeedDate string = '2025-10-31T00:00:00Z'
 
 param virtualNetworkAddressPrefix string = '10.0.0.0/24'
 
+param virtualMachineLoginPrincipalId string
+@secure()
+param virtualMachineAdminPassword string
+param virtualMachineEnableEncryptionAtHost bool = true
+
+param deployAzureBastion bool = false
+
 param enableAvmTelemetry bool = true
 
 param sequence int = 1
 param tags object = {}
+param deploymentTime string = utcNow()
 
 // HACK: I don't like the way Tenable developed this
 var logAnalyticsUri = replace(environment().portal, 'https://portal', 'https://${sentinelWorkspaceId}.ods.opinsights')
@@ -54,11 +62,13 @@ var shortLocationNames = {
 }
 
 // Create a NAT Gateway for outbound traffic from the app to Tenable
-module natGatewayModule 'br/public:avm/res/network/nat-gateway:2.0.0' = {
+module natGatewayModule 'br/public:avm/res/network/nat-gateway:2.0.1' = {
   name: 'natGatewayDeployment'
   params: {
     name: 'ng-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
     tags: tags
+
+    natGatewaySku: 'StandardV2'
 
     // Deploy non-zonal, pending zone redundancy support for NAT Gateway
     availabilityZone: -1
@@ -66,11 +76,7 @@ module natGatewayModule 'br/public:avm/res/network/nat-gateway:2.0.0' = {
     // Create a public IP for the NAT Gateway and make it zone redundant even if NAT Gateway itself isn't yet
     publicIPAddresses: [
       {
-        availabilityZones: [
-          1
-          2
-          3
-        ]
+        availabilityZones: [1, 2, 3]
         name: 'pip-ng-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
         skuTier: 'Regional'
         diagnosticSettings: [
@@ -86,19 +92,138 @@ module natGatewayModule 'br/public:avm/res/network/nat-gateway:2.0.0' = {
   }
 }
 
-module networkSecurityGroupModule 'br/public:avm/res/network/network-security-group:0.5.1' = {
+module networkSecurityGroupModule 'br/public:avm/res/network/network-security-group:0.5.2' = {
   name: 'networkSecurityGroupDeployment'
   params: {
     // Required parameters
-    name: 'nsg-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
+    name: 'nsg-default-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
     tags: tags
 
     enableTelemetry: enableAvmTelemetry
   }
 }
 
+module networkSecurityGroupBastionModule 'br/public:avm/res/network/network-security-group:0.5.2' = {
+  name: 'networkSecurityGroupBastionDeployment'
+  params: {
+    // Required parameters
+    name: 'nsg-bas-${functionName}-prod-${resourceGroup().location}-${sequenceFormatted}'
+    tags: tags
+
+    // From https://learn.microsoft.com/en-us/azure/bastion/bastion-nsg#apply
+    securityRules: [
+      {
+        name: 'AllowBastionInbound'
+        properties: {
+          priority: 150
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'AllowGatewayManagerInbound'
+        properties: {
+          priority: 200
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'GatewayManager'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'AllowAzureLoadBalancerInbound'
+        properties: {
+          priority: 250
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'AllowBastionHostCommunicationInbound'
+        properties: {
+          priority: 300
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'VirtualNetwork'
+          destinationPortRanges: ['8080', '5701']
+        }
+      }
+      {
+        name: 'AllowSshRdpOutbound'
+        properties: {
+          priority: 150
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'VirtualNetwork'
+          destinationPortRanges: ['22', '3389']
+        }
+      }
+      {
+        name: 'AllowAzureCloudOutbound'
+        properties: {
+          priority: 200
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'AzureCloud'
+          destinationPortRange: '443'
+        }
+      }
+      {
+        name: 'AllowBastionHostCommunicationOutbound'
+        properties: {
+          priority: 250
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'VirtualNetwork'
+          destinationPortRanges: ['8080', '5701']
+        }
+      }
+      {
+        name: 'AllowHttpOutbound'
+        properties: {
+          priority: 300
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: '*'
+          sourcePortRange: '*'
+          destinationAddressPrefix: 'Internet'
+          destinationPortRange: '80'
+        }
+      }
+    ]
+
+    enableTelemetry: enableAvmTelemetry
+  }
+}
+
 // Create the virtual network and subnets
-module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.0' = {
+module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.2' = {
   name: 'virtualNetworkDeployment'
   params: {
     // Required parameters
@@ -118,6 +243,14 @@ module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.0' = 
         addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 28, 1)
         name: 'PrivateEndpointSubnet'
         networkSecurityGroupResourceId: networkSecurityGroupModule.outputs.resourceId
+        defaultOutboundAccess: false
+      }
+      {
+        addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 28, 2)
+        name: 'ManagementSubnet'
+        networkSecurityGroupResourceId: networkSecurityGroupModule.outputs.resourceId
+        natGatewayResourceId: natGatewayModule.outputs.resourceId
+        defaultOutboundAccess: false
       }
       {
         addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 27, 2)
@@ -125,6 +258,13 @@ module virtualNetworkModule 'br/public:avm/res/network/virtual-network:0.7.0' = 
         name: 'FunctionAppSubnet'
         networkSecurityGroupResourceId: networkSecurityGroupModule.outputs.resourceId
         natGatewayResourceId: natGatewayModule.outputs.resourceId
+        defaultOutboundAccess: false
+      }
+      {
+        name: 'AzureBastionSubnet'
+        addressPrefix: cidrSubnet(virtualNetworkAddressPrefix, 26, 2)
+        networkSecurityGroupResourceId: networkSecurityGroupBastionModule.outputs.resourceId
+        defaultOutboundAccess: false
       }
     ]
     tags: tags
@@ -176,7 +316,7 @@ module privateDnsZonesVnetLinksModule 'modules/virtual-network-link/main.bicep' 
 ]
 
 // Create the UAMI
-module userAssignedIdentityModule 'br/public:avm/res/managed-identity/user-assigned-identity:0.4.1' = {
+module userAssignedIdentityModule 'br/public:avm/res/managed-identity/user-assigned-identity:0.5.0' = {
   name: 'userAssignedIdentityDeployment'
   params: {
     // Required parameters
@@ -189,7 +329,7 @@ module userAssignedIdentityModule 'br/public:avm/res/managed-identity/user-assig
 }
 
 // Create the Key Vault with private endpoint and secrets
-module vaultModule 'br/public:avm/res/key-vault/vault:0.12.1' = {
+module vaultModule 'br/public:avm/res/key-vault/vault:0.13.3' = {
   name: 'vaultDeployment'
   params: {
     // Required parameters
@@ -268,7 +408,7 @@ module vaultModule 'br/public:avm/res/key-vault/vault:0.12.1' = {
 var appPackageContainerName = 'app-package-${toLower(functionName)}'
 
 // Create the Storage Account with private endpoint and the file share and container
-module storageAccountModule 'br/public:avm/res/storage/storage-account:0.20.0' = {
+module storageAccountModule 'br/public:avm/res/storage/storage-account:0.31.0' = {
   name: 'storageAccountDeployment'
   params: {
     // Required parameters
@@ -388,8 +528,8 @@ module storageAccountModule 'br/public:avm/res/storage/storage-account:0.20.0' =
   }
 }
 
-// Create the App Insights
-module componentModule 'br/public:avm/res/insights/component:0.6.0' = {
+// Create the Application Insights resource
+module componentModule 'br/public:avm/res/insights/component:0.7.1' = {
   name: 'componentDeployment'
   params: {
     // Required parameters
@@ -417,7 +557,7 @@ module componentModule 'br/public:avm/res/insights/component:0.6.0' = {
 }
 
 // Create the consumption plan
-module serverfarmModule 'br/public:avm/res/web/serverfarm:0.4.1' = {
+module serverfarmModule 'br/public:avm/res/web/serverfarm:0.6.0' = {
   name: 'serverfarmDeployment'
   params: {
     // Required parameters
@@ -443,7 +583,7 @@ var functionAppSpecialTags = {
 }
 
 // Create the Function App and assign UAMI
-module functionAppModule 'br/public:avm/res/web/site:0.19.4' = {
+module functionAppModule 'br/public:avm/res/web/site:0.21.0' = {
   name: 'functionAppDeployment'
   params: {
     // Required parameters
@@ -452,13 +592,16 @@ module functionAppModule 'br/public:avm/res/web/site:0.19.4' = {
     serverFarmResourceId: serverfarmModule.outputs.resourceId
 
     httpsOnly: true
+
     publicNetworkAccess: 'Disabled'
-    virtualNetworkSubnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[1]
+    virtualNetworkSubnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[2]
     outboundVnetRouting: {
       allTraffic: true
       contentShareTraffic: true
       applicationTraffic: true
     }
+
+    autoGeneratedDomainNameLabelScope: 'SubscriptionReuse'
 
     configs: [
       {
@@ -509,6 +652,15 @@ module functionAppModule 'br/public:avm/res/web/site:0.19.4' = {
         userAssignedIdentityModule.outputs.resourceId
       ]
     }
+
+    roleAssignments: [
+      {
+        // The UAMI is also assigned to the VM for deployment purposes
+        principalId: userAssignedIdentityModule.outputs.principalId
+        roleDefinitionIdOrName: 'Website Contributor'
+        principalType: 'ServicePrincipal'
+      }
+    ]
 
     functionAppConfig: {
       deployment: {
@@ -570,6 +722,165 @@ module systemAssignedIdentityRoleAssignmentModule 'modules/roleAssignment-st/mai
       'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
     )
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Create a virtual machine to perform the Function app deployment
+// TODO: Enable TrustedLaunch
+module virtualMachine 'br/public:avm/res/compute/virtual-machine:0.21.0' = {
+  params: {
+    // Required parameters
+    availabilityZone: -1
+    name: 'vm-${functionName}-${sequenceFormatted}'
+    nicConfigurations: [
+      {
+        deleteOption: 'Delete'
+        diagnosticSettings: [
+          {
+            name: 'customSetting'
+            workspaceResourceId: appInsightsWorkspaceResourceID
+          }
+        ]
+        ipConfigurations: [
+          {
+            diagnosticSettings: [
+              {
+                name: 'customSetting'
+                workspaceResourceId: appInsightsWorkspaceResourceID
+              }
+            ]
+            name: 'ipconfig01'
+            subnetResourceId: virtualNetworkModule.outputs.subnetResourceIds[1]
+          }
+        ]
+        name: 'vm-${functionName}-${sequenceFormatted}-nic'
+      }
+    ]
+    osDisk: {
+      caching: 'ReadWrite'
+      createOption: 'FromImage'
+      deleteOption: 'Delete'
+      diskSizeGB: 128
+      managedDisk: {
+        storageAccountType: 'Standard_LRS'
+      }
+      name: 'vm-${functionName}-${sequenceFormatted}-osDisk'
+    }
+    osType: 'Windows'
+    vmSize: 'Standard_D2as_v5'
+    // Non-required parameters
+    // HACK: 2026-02-17: Does not install AZ CLI :(
+    // additionalUnattendContent: [
+    //   {
+    //     content: '<FirstLogonCommands><SynchronousCommand><CommandLine>cmd /c winget install -e -h -s winget --id Microsoft.AzureCLI</CommandLine><Description>Install Azure CLI</Description><Order>1</Order></SynchronousCommand></FirstLogonCommands>'
+    //     settingName: 'FirstLogonCommands'
+    //   }
+    // ]
+    adminPassword: virtualMachineAdminPassword
+    adminUsername: 'AzureUser'
+    // autoShutdownConfig: {
+    //   dailyRecurrenceTime: '19:00'
+    //   notificationSettings: {
+    //     emailRecipient: 'test@contoso.com'
+    //     notificationLocale: 'en'
+    //     status: 'Enabled'
+    //     timeInMinutes: 30
+    //   }
+    //   status: 'Enabled'
+    //   timeZone: 'UTC'
+    // }
+    computerName: take('vm-${functionName}-${sequenceFormatted}', 15)
+    enableAutomaticUpdates: true
+    encryptionAtHost: virtualMachineEnableEncryptionAtHost
+    extensionAadJoinConfig: {
+      enabled: true
+      name: 'EntraIDLoginExtension'
+      settings: {
+        mdmId: ''
+      }
+      tags: tags
+    }
+    extensionAntiMalwareConfig: {
+      enabled: true
+      name: 'AntiMalwareExtension'
+      settings: {
+        AntimalwareEnabled: 'true'
+        RealtimeProtectionEnabled: 'true'
+        ScheduledScanSettings: {
+          day: '7'
+          isEnabled: 'true'
+          scanType: 'Quick'
+          time: '120'
+        }
+      }
+      tags: tags
+    }
+    // Run custom Function app deployment script
+    // Flexible Consumption model doesn't support specifying the zip file as an environment variable during deployment.
+    // Therefore, we need to deploy the zip file separately after the function app is created.
+    extensionCustomScriptConfig: {
+      name: 'FxAppDeployScript'
+      protectedSettings: {}
+      settings: {
+        commandToExecute: 'powershell -ExecutionPolicy Bypass -File Deploy-FunctionApp.ps1 -ResourceGroupName ${resourceGroup().name} -FunctionAppName ${functionAppModule.outputs.name} -ClientId ${userAssignedIdentityModule.outputs.clientId}'
+        fileUris: [
+          // TODO: Update to main branch or release tag
+          'https://raw.githubusercontent.com/SvenAelterman/TenableVMSentinelFunctionAppWithSecuredStorage/refs/heads/1-flex-consumption-fx-app-now-supports-retrieving-kv-secrets-over-private-endpoint/src/scripts/Deploy-FunctionApp.ps1'
+        ]
+      }
+      forceUpdateTag: deploymentTime
+      tags: tags
+    }
+    managedIdentities: {
+      systemAssigned: true // Required for Entra ID Join
+      userAssignedResourceIds: [
+        // Used to deploy the function app code from the VM
+        userAssignedIdentityModule.outputs.resourceId
+      ]
+    }
+    imageReference: {
+      offer: 'WindowsServer'
+      publisher: 'MicrosoftWindowsServer'
+      sku: '2025-datacenter-azure-edition'
+      version: 'latest'
+    }
+    patchMode: 'AutomaticByPlatform'
+    rebootSetting: 'IfRequired'
+    roleAssignments: [
+      {
+        principalId: virtualMachineLoginPrincipalId
+        roleDefinitionIdOrName: 'Virtual Machine Administrator Login'
+      }
+    ]
+    enableTelemetry: enableAvmTelemetry
+    tags: tags
+  }
+}
+
+module bastionHost 'br/public:avm/res/network/bastion-host:0.8.2' = if (deployAzureBastion) {
+  params: {
+    // Required parameters
+    name: 'bas-${functionName}-${shortLocationNames[resourceGroup().location]}-${sequenceFormatted}'
+    virtualNetworkResourceId: virtualNetworkModule.outputs.resourceId
+
+    // Non-required parameters
+    publicIPAddressObject: {
+      name: 'pip-bas-${functionName}-${shortLocationNames[resourceGroup().location]}-${sequenceFormatted}'
+      publicIPAllocationMethod: 'Static'
+      skuName: 'Standard'
+      skuTier: 'Regional'
+      tags: tags
+    }
+    availabilityZones: [1, 2, 3]
+    diagnosticSettings: [
+      {
+        name: 'customSetting'
+        workspaceResourceId: appInsightsWorkspaceResourceID
+      }
+    ]
+    skuName: 'Basic'
+    enableTelemetry: enableAvmTelemetry
+    tags: tags
   }
 }
 
