@@ -874,6 +874,7 @@ module virtualMachine 'br/public:avm/res/compute/virtual-machine:0.21.0' = {
 }
 
 module bastionHost 'br/public:avm/res/network/bastion-host:0.8.2' = if (deployAzureBastion) {
+  name: 'bastionHostDeployment'
   params: {
     // Required parameters
     name: 'bas-${functionName}-${shortLocationNames[resourceGroup().location]}-${sequenceFormatted}'
