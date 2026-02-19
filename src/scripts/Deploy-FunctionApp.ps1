@@ -35,3 +35,5 @@ Start-Sleep -Seconds 10
     --name "$FunctionAppName" `
     --resource-group $ResourceGroupName `
     --src $FxAppZipFileName
+
+Remove-Item .\$FxAppZipFileName
