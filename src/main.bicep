@@ -522,6 +522,21 @@ module storageAccountModule 'br/public:avm/res/storage/storage-account:0.31.0' =
         roleDefinitionIdOrName: 'Storage Blob Data Contributor'
         principalType: 'ServicePrincipal'
       }
+      {
+        principalId: userAssignedIdentityModule.outputs.principalId
+        roleDefinitionIdOrName: 'Storage File Data Privileged Contributor'
+        principalType: 'ServicePrincipal'
+      }
+      {
+        principalId: userAssignedIdentityModule.outputs.principalId
+        roleDefinitionIdOrName: 'Storage Queue Data Contributor'
+        principalType: 'ServicePrincipal'
+      }
+      {
+        principalId: userAssignedIdentityModule.outputs.principalId
+        roleDefinitionIdOrName: 'Storage Table Data Contributor'
+        principalType: 'ServicePrincipal'
+      }
     ]
 
     enableTelemetry: enableAvmTelemetry
