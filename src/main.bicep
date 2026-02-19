@@ -728,6 +728,7 @@ module systemAssignedIdentityRoleAssignmentModule 'modules/roleAssignment-st/mai
 // Create a virtual machine to perform the Function app deployment
 // TODO: Enable TrustedLaunch
 module virtualMachine 'br/public:avm/res/compute/virtual-machine:0.21.0' = {
+  name: 'virtualMachineDeployment'
   params: {
     // Required parameters
     availabilityZone: -1
