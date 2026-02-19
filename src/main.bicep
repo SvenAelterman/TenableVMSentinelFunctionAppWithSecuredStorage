@@ -342,7 +342,7 @@ module vaultModule 'br/public:avm/res/key-vault/vault:0.13.3' = {
     ]
     enablePurgeProtection: false
     enableRbacAuthorization: true
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
