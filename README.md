@@ -8,8 +8,9 @@ This repo contains Bicep code based on the ARM JSON template as of 2025-05-20.
 
 - Creates a Virtual Network and Private Endpoints for the Storage Account and Function App.
   - Creates the Function app in a Flex Consumption Plan to enable virtual network integration.
-  - (pending) Creates a NAT Gateway to ensure outbound connectivity even after default outbound access is retired.
+  - Creates a NAT Gateway to ensure outbound connectivity even after default outbound access is retired.
 - Sends data to Application Insights via Entra authentication instead of instrumentation key.
+- Stores sensitive environment variables for the Function App in Key Vault to enable separation of duties and easier rotating of secrets.
 
 ## Other Enhancements
 
@@ -23,7 +24,7 @@ A PowerShell 7 script is provided that will orchestrate the complete deployment.
 ```bicep
 using 'main.bicep'
 
-param appInsightsWorkspaceResourceID = ''
+param appInsightsWorkspaceResourceID = '/subscriptions/...'
 param sentinelWorkspaceKey = 'hmCI...'
 param sentinelWorkspaceId = '552c...'
 param tenableAccessKey = 'abcd...'
@@ -31,23 +32,23 @@ param tenableSecretKey = 'efgh...'
 
 param existingPrivateLinkDnsZonesResourceGroupResourceId = '<Resource ID of the RG where private link DNS zones are created>'
 
+param virtualNetworkAddressPrefix = '10.0.0.0/24'
+
 param sequence = 1
+
+param virtualMachineEnableEncryptionAtHost = true // This requires that this feature is enabled at the subscription level
+param virtualMachineLoginPrincipalId = '<Entra object ID of a user or security group that will be granted Administrator login permission to the VM>'
+param virtualMachineAdminPassword = '<secret value>' // As a best practice, pull this from a Key Vault
+param deployAzureBastion = true
+
 ```
 
 Then, run the `./deploy.ps` PowerShell.
 
-> This command should be run from a system that will have line-of-sight to the Function App's private endpoint and will be able to resolve its DNS name to the private endpoint IP address.
-
 ```PowerShell
-./deploy.ps1
+./deploy.ps1 [-Verbose]
 ```
 
 ## Future Improvements
 
-### Key Vault for Secrets
-
-[Flex Consumption Plan doesn't support referencing Key Vault secrets](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan#:~:text=Key%20Vault%20and%20App%20Configuration%20References) in app settings when the Key Vault is network restricted. Because the entire point behind this repo is to enable deployment of the Tenable functions in a network-restricted environment, the secret values are added directly to the app settings. If in the future, Flex Consumption Plan will support Key Vault references for Key Vaults that network restricted, the code is already present (but commented) to enable this.
-
-Alternatively, an Elastic Premium plan could be used instead which will incur a fixed cost.
-
-### Deployment of the Function App Code with Deployment Script
+### Add resource locks
